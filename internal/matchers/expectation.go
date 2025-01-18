@@ -1,16 +1,8 @@
+// Code created by gotmpl. DO NOT MODIFY.
+// source: internal/shared/matchers/expectation.go.tmpl
+
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package matchers // import "go.opentelemetry.io/otel/internal/matchers"
 
@@ -24,9 +16,7 @@ import (
 	"time"
 )
 
-var (
-	stackTracePruneRE = regexp.MustCompile(`runtime\/debug|testing|internal\/matchers`)
-)
+var stackTracePruneRE = regexp.MustCompile(`runtime\/debug|testing|internal\/matchers`)
 
 type Expectation struct {
 	t      *testing.T
@@ -64,7 +54,7 @@ func (e *Expectation) NotToBeNil() {
 func (e *Expectation) ToBeTrue() {
 	switch a := e.actual.(type) {
 	case bool:
-		if e.actual == false {
+		if !a {
 			e.fail(fmt.Sprintf("Expected\n\t%v\nto be true", e.actual))
 		}
 	default:
@@ -75,7 +65,7 @@ func (e *Expectation) ToBeTrue() {
 func (e *Expectation) ToBeFalse() {
 	switch a := e.actual.(type) {
 	case bool:
-		if e.actual == true {
+		if a {
 			e.fail(fmt.Sprintf("Expected\n\t%v\nto be false", e.actual))
 		}
 	default:
@@ -253,30 +243,31 @@ func (e *Expectation) ToMatchInAnyOrder(expected interface{}) {
 
 func (e *Expectation) ToBeTemporally(matcher TemporalMatcher, compareTo interface{}) {
 	if actual, ok := e.actual.(time.Time); ok {
-		if ct, ok := compareTo.(time.Time); ok {
-			switch matcher {
-			case Before:
-				if !actual.Before(ct) {
-					e.fail(fmt.Sprintf("Expected\n\t%v\nto be temporally before\n\t%v", e.actual, compareTo))
-				}
-			case BeforeOrSameTime:
-				if actual.After(ct) {
-					e.fail(fmt.Sprintf("Expected\n\t%v\nto be temporally before or at the same time as\n\t%v", e.actual, compareTo))
-				}
-			case After:
-				if !actual.After(ct) {
-					e.fail(fmt.Sprintf("Expected\n\t%v\nto be temporally after\n\t%v", e.actual, compareTo))
-				}
-			case AfterOrSameTime:
-				if actual.Before(ct) {
-					e.fail(fmt.Sprintf("Expected\n\t%v\nto be temporally after or at the same time as\n\t%v", e.actual, compareTo))
-				}
-			default:
-				e.fail("Cannot compare times with unexpected temporal matcher")
-			}
-		} else {
+		ct, ok := compareTo.(time.Time)
+		if !ok {
 			e.fail(fmt.Sprintf("Cannot compare to non-temporal value\n\t%v", compareTo))
 			return
+		}
+
+		switch matcher {
+		case Before:
+			if !actual.Before(ct) {
+				e.fail(fmt.Sprintf("Expected\n\t%v\nto be temporally before\n\t%v", e.actual, compareTo))
+			}
+		case BeforeOrSameTime:
+			if actual.After(ct) {
+				e.fail(fmt.Sprintf("Expected\n\t%v\nto be temporally before or at the same time as\n\t%v", e.actual, compareTo))
+			}
+		case After:
+			if !actual.After(ct) {
+				e.fail(fmt.Sprintf("Expected\n\t%v\nto be temporally after\n\t%v", e.actual, compareTo))
+			}
+		case AfterOrSameTime:
+			if actual.Before(ct) {
+				e.fail(fmt.Sprintf("Expected\n\t%v\nto be temporally after or at the same time as\n\t%v", e.actual, compareTo))
+			}
+		default:
+			e.fail("Cannot compare times with unexpected temporal matcher")
 		}
 
 		return

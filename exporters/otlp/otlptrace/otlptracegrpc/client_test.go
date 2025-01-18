@@ -1,20 +1,11 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+
 package otlptracegrpc_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -25,16 +16,20 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/encoding/gzip"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/internal/otlptracetest"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc/internal/otlptracetest"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 )
 
@@ -58,7 +53,7 @@ func contextWithTimeout(parent context.Context, t *testing.T, timeout time.Durat
 	return context.WithDeadline(parent, d)
 }
 
-func TestNew_endToEnd(t *testing.T) {
+func TestNewEndToEnd(t *testing.T) {
 	tests := []struct {
 		name           string
 		additionalOpts []otlptracegrpc.Option
@@ -81,7 +76,11 @@ func TestNew_endToEnd(t *testing.T) {
 		{
 			name: "WithDialOptions",
 			additionalOpts: []otlptracegrpc.Option{
-				otlptracegrpc.WithDialOption(grpc.WithBlock()),
+				otlptracegrpc.WithDialOption(
+					grpc.WithConnectParams(grpc.ConnectParams{
+						Backoff:           backoff.DefaultConfig,
+						MinConnectTimeout: time.Second,
+					})),
 			},
 		},
 	}
@@ -91,6 +90,24 @@ func TestNew_endToEnd(t *testing.T) {
 			newExporterEndToEndTest(t, test.additionalOpts)
 		})
 	}
+}
+
+func TestWithEndpointURL(t *testing.T) {
+	mc := runMockCollector(t)
+
+	ctx := context.Background()
+	exp := newGRPCExporter(t, ctx, "", []otlptracegrpc.Option{
+		otlptracegrpc.WithEndpointURL("http://" + mc.endpoint),
+	}...)
+	t.Cleanup(func() {
+		ctx, cancel := contextWithTimeout(ctx, t, 10*time.Second)
+		defer cancel()
+
+		require.NoError(t, exp.Shutdown(ctx))
+	})
+
+	// RunEndToEndTest closes mc.
+	otlptracetest.RunEndToEndTest(ctx, t, exp, mc)
 }
 
 func newGRPCExporter(t *testing.T, ctx context.Context, endpoint string, additionalOpts ...otlptracegrpc.Option) *otlptrace.Exporter {
@@ -111,8 +128,6 @@ func newGRPCExporter(t *testing.T, ctx context.Context, endpoint string, additio
 
 func newExporterEndToEndTest(t *testing.T, additionalOpts []otlptracegrpc.Option) {
 	mc := runMockCollector(t)
-
-	<-time.After(5 * time.Millisecond)
 
 	ctx := context.Background()
 	exp := newGRPCExporter(t, ctx, mc.endpoint, additionalOpts...)
@@ -135,13 +150,12 @@ func TestExporterShutdown(t *testing.T) {
 		return otlptracegrpc.NewClient(
 			otlptracegrpc.WithEndpoint(mc.endpoint),
 			otlptracegrpc.WithInsecure(),
-			otlptracegrpc.WithDialOption(grpc.WithBlock()),
 		)
 	}
 	otlptracetest.RunExporterShutdownTest(t, factory)
 }
 
-func TestNew_invokeStartThenStopManyTimes(t *testing.T) {
+func TestNewInvokeStartThenStopManyTimes(t *testing.T) {
 	mc := runMockCollector(t)
 	t.Cleanup(func() { require.NoError(t, mc.stop()) })
 
@@ -167,8 +181,8 @@ func TestNew_invokeStartThenStopManyTimes(t *testing.T) {
 	}
 }
 
-// This test takes a long time to run: to skip it, run tests using: -short
-func TestNew_collectorOnBadConnection(t *testing.T) {
+// This test takes a long time to run: to skip it, run tests using: -short.
+func TestNewCollectorOnBadConnection(t *testing.T) {
 	if testing.Short() {
 		t.Skipf("Skipping this long running test")
 	}
@@ -186,30 +200,34 @@ func TestNew_collectorOnBadConnection(t *testing.T) {
 	endpoint := fmt.Sprintf("localhost:%s", collectorPortStr)
 	ctx := context.Background()
 	exp := newGRPCExporter(t, ctx, endpoint)
-	_ = exp.Shutdown(ctx)
+	require.NoError(t, exp.Shutdown(ctx))
 }
 
-func TestNew_withEndpoint(t *testing.T) {
+func TestNewWithEndpoint(t *testing.T) {
 	mc := runMockCollector(t)
 	t.Cleanup(func() { require.NoError(t, mc.stop()) })
 
 	ctx := context.Background()
 	exp := newGRPCExporter(t, ctx, mc.endpoint)
-	_ = exp.Shutdown(ctx)
+	require.NoError(t, exp.Shutdown(ctx))
 }
 
-func TestNew_withHeaders(t *testing.T) {
+func TestNewWithHeaders(t *testing.T) {
 	mc := runMockCollector(t)
 	t.Cleanup(func() { require.NoError(t, mc.stop()) })
 
 	ctx := context.Background()
+	additionalKey := "additional-custom-header"
+	ctx = metadata.AppendToOutgoingContext(ctx, additionalKey, "additional-value")
 	exp := newGRPCExporter(t, ctx, mc.endpoint,
 		otlptracegrpc.WithHeaders(map[string]string{"header1": "value1"}))
 	t.Cleanup(func() { require.NoError(t, exp.Shutdown(ctx)) })
 	require.NoError(t, exp.ExportSpans(ctx, roSpans))
 
 	headers := mc.getHeaders()
+	require.Regexp(t, "OTel OTLP Exporter Go/1\\..*", headers.Get("user-agent"))
 	require.Len(t, headers.Get("header1"), 1)
+	require.Len(t, headers.Get(additionalKey), 1)
 	assert.Equal(t, "value1", headers.Get("header1")[0])
 }
 
@@ -235,13 +253,13 @@ func TestExportSpansTimeoutHonored(t *testing.T) {
 	// Release the export so everything is cleaned up on shutdown.
 	close(exportBlock)
 
-	require.Equal(t, codes.DeadlineExceeded, status.Convert(err).Code())
+	unwrapped := errors.Unwrap(err)
+	require.Equal(t, codes.DeadlineExceeded, status.Convert(unwrapped).Code())
+	require.True(t, strings.HasPrefix(err.Error(), "traces export: "), err)
 }
 
-func TestNew_withMultipleAttributeTypes(t *testing.T) {
+func TestNewWithMultipleAttributeTypes(t *testing.T) {
 	mc := runMockCollector(t)
-
-	<-time.After(5 * time.Millisecond)
 
 	ctx, cancel := contextWithTimeout(context.Background(), t, 10*time.Second)
 	t.Cleanup(cancel)
@@ -358,30 +376,51 @@ func TestNew_withMultipleAttributeTypes(t *testing.T) {
 	}
 }
 
-func TestStartErrorInvalidAddress(t *testing.T) {
-	client := otlptracegrpc.NewClient(
-		otlptracegrpc.WithInsecure(),
-		// Validate the connection in Start (which should return the error).
-		otlptracegrpc.WithDialOption(
-			grpc.WithBlock(),
-			grpc.FailOnNonTempDialError(true),
-		),
-		otlptracegrpc.WithEndpoint("invalid"),
-		otlptracegrpc.WithReconnectionPeriod(time.Hour),
-	)
-	err := client.Start(context.Background())
-	assert.EqualError(t, err, `connection error: desc = "transport: error while dialing: dial tcp: address invalid: missing port in address"`)
-}
-
 func TestEmptyData(t *testing.T) {
-	mc := runMockCollectorAtEndpoint(t, "localhost:56561")
+	mc := runMockCollector(t)
 	t.Cleanup(func() { require.NoError(t, mc.stop()) })
-
-	<-time.After(5 * time.Millisecond)
 
 	ctx := context.Background()
 	exp := newGRPCExporter(t, ctx, mc.endpoint)
 	t.Cleanup(func() { require.NoError(t, exp.Shutdown(ctx)) })
 
 	assert.NoError(t, exp.ExportSpans(ctx, nil))
+}
+
+func TestPartialSuccess(t *testing.T) {
+	mc := runMockCollectorWithConfig(t, &mockConfig{
+		partial: &coltracepb.ExportTracePartialSuccess{
+			RejectedSpans: 2,
+			ErrorMessage:  "partially successful",
+		},
+	})
+	t.Cleanup(func() { require.NoError(t, mc.stop()) })
+
+	errs := []error{}
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		errs = append(errs, err)
+	}))
+	ctx := context.Background()
+	exp := newGRPCExporter(t, ctx, mc.endpoint)
+	t.Cleanup(func() { require.NoError(t, exp.Shutdown(ctx)) })
+	require.NoError(t, exp.ExportSpans(ctx, roSpans))
+
+	require.Len(t, errs, 1)
+	require.Contains(t, errs[0].Error(), "partially successful")
+	require.Contains(t, errs[0].Error(), "2 spans rejected")
+}
+
+func TestCustomUserAgent(t *testing.T) {
+	customUserAgent := "custom-user-agent"
+	mc := runMockCollector(t)
+	t.Cleanup(func() { require.NoError(t, mc.stop()) })
+
+	ctx := context.Background()
+	exp := newGRPCExporter(t, ctx, mc.endpoint,
+		otlptracegrpc.WithDialOption(grpc.WithUserAgent(customUserAgent)))
+	t.Cleanup(func() { require.NoError(t, exp.Shutdown(ctx)) })
+	require.NoError(t, exp.ExportSpans(ctx, roSpans))
+
+	headers := mc.getHeaders()
+	require.Contains(t, headers.Get("user-agent")[0], customUserAgent)
 }

@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package attribute_test
 
@@ -18,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
 
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -130,5 +120,52 @@ func TestKeyValueValid(t *testing.T) {
 		if got, want := test.kv.Valid(), test.valid; got != want {
 			t.Error(test.desc)
 		}
+	}
+}
+
+func TestIncorrectCast(t *testing.T) {
+	testCases := []struct {
+		name string
+		val  attribute.Value
+	}{
+		{
+			name: "Float64",
+			val:  attribute.Float64Value(1.0),
+		},
+		{
+			name: "Int64",
+			val:  attribute.Int64Value(2),
+		},
+		{
+			name: "String",
+			val:  attribute.BoolValue(true),
+		},
+		{
+			name: "Float64Slice",
+			val:  attribute.Float64SliceValue([]float64{1.0}),
+		},
+		{
+			name: "Int64Slice",
+			val:  attribute.Int64SliceValue([]int64{2}),
+		},
+		{
+			name: "StringSlice",
+			val:  attribute.BoolSliceValue([]bool{true}),
+		},
+	}
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.NotPanics(t, func() {
+				tt.val.AsBool()
+				tt.val.AsBoolSlice()
+				tt.val.AsFloat64()
+				tt.val.AsFloat64Slice()
+				tt.val.AsInt64()
+				tt.val.AsInt64Slice()
+				tt.val.AsInterface()
+				tt.val.AsString()
+				tt.val.AsStringSlice()
+			})
+		})
 	}
 }

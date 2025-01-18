@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 //go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris || zos
 // +build aix darwin dragonfly freebsd linux netbsd openbsd solaris zos
@@ -19,7 +8,7 @@ package resource_test
 
 import (
 	"fmt"
-	"io/ioutil"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -39,7 +28,7 @@ func fakeUnameProvider(buf *unix.Utsname) error {
 }
 
 func fakeUnameProviderWithError(buf *unix.Utsname) error {
-	return fmt.Errorf("Error invoking uname(2)")
+	return fmt.Errorf("error invoking uname(2)")
 }
 
 func TestUname(t *testing.T) {
@@ -47,7 +36,7 @@ func TestUname(t *testing.T) {
 
 	uname, err := resource.Uname()
 
-	require.Equal(t, uname, "Mock OS DESKTOP-PC 5.0.0 #1 SMP Thu May 6 12:34:56 UTC 2021 x86_64")
+	require.Equal(t, "Mock OS DESKTOP-PC 5.0.0 #1 SMP Thu May 6 12:34:56 UTC 2021 x86_64", uname)
 	require.NoError(t, err)
 
 	resource.SetDefaultUnameProvider()
@@ -64,35 +53,11 @@ func TestUnameError(t *testing.T) {
 	resource.SetDefaultUnameProvider()
 }
 
-func TestCharsToString(t *testing.T) {
-	tt := []struct {
-		Name     string
-		Bytes    []byte
-		Expected string
-	}{
-		{"Nil array", nil, ""},
-		{"Empty array", []byte{}, ""},
-		{"Empty string (null terminated)", []byte{0x00}, ""},
-		{"Nonempty string (null terminated)", []byte{0x31, 0x32, 0x33, 0x00}, "123"},
-		{"Nonempty string (non-null terminated)", []byte{0x31, 0x32, 0x33}, "123"},
-		{"Nonempty string with values after null", []byte{0x31, 0x32, 0x33, 0x00, 0x34}, "123"},
-	}
-
-	for _, tc := range tt {
-		tc := tc
-
-		t.Run(tc.Name, func(t *testing.T) {
-			result := resource.CharsToString(tc.Bytes)
-			require.EqualValues(t, tc.Expected, result)
-		})
-	}
-}
-
 func TestGetFirstAvailableFile(t *testing.T) {
 	tempDir := t.TempDir()
 
-	file1, _ := ioutil.TempFile(tempDir, "candidate_")
-	file2, _ := ioutil.TempFile(tempDir, "candidate_")
+	file1, _ := os.CreateTemp(tempDir, "candidate_")
+	file2, _ := os.CreateTemp(tempDir, "candidate_")
 
 	filename1, filename2 := file1.Name(), file2.Name()
 

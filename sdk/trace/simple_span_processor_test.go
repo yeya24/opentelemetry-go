@@ -1,24 +1,16 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package trace_test
 
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -117,7 +109,7 @@ func TestSimpleSpanProcessorShutdown(t *testing.T) {
 	}
 }
 
-func TestSimpleSpanProcessorShutdownOnEndConcurrency(t *testing.T) {
+func TestSimpleSpanProcessorShutdownOnEndConcurrentSafe(t *testing.T) {
 	exporter := &testExporter{}
 	ssp := sdktrace.NewSimpleSpanProcessor(exporter)
 	tp := basicTracerProvider(t)
@@ -148,6 +140,32 @@ func TestSimpleSpanProcessorShutdownOnEndConcurrency(t *testing.T) {
 
 	stop <- struct{}{}
 	<-done
+}
+
+func TestSimpleSpanProcessorShutdownOnEndConcurrentSafe2(t *testing.T) {
+	exporter := &testExporter{}
+	ssp := sdktrace.NewSimpleSpanProcessor(exporter)
+	tp := basicTracerProvider(t)
+	tp.RegisterSpanProcessor(ssp)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	span := func(spanName string) {
+		assert.NotPanics(t, func() {
+			defer wg.Done()
+			_, span := tp.Tracer("test").Start(context.Background(), spanName)
+			span.End()
+		})
+	}
+
+	go span("test-span-1")
+	go span("test-span-2")
+
+	wg.Wait()
+
+	assert.NoError(t, ssp.Shutdown(context.Background()))
+	assert.True(t, exporter.shutdown, "exporter shutdown")
 }
 
 func TestSimpleSpanProcessorShutdownHonorsContextDeadline(t *testing.T) {

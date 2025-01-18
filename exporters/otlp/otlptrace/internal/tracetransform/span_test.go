@@ -1,21 +1,9 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package tracetransform
 
 import (
-	"strconv"
 	"testing"
 	"time"
 
@@ -30,7 +18,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
@@ -80,6 +68,7 @@ func TestEmptySpanEvent(t *testing.T) {
 func TestSpanEvent(t *testing.T) {
 	attrs := []attribute.KeyValue{attribute.Int("one", 1), attribute.Int("two", 2)}
 	eventTime := time.Date(2020, 5, 20, 0, 0, 0, 0, time.UTC)
+	negativeEventTime := time.Date(1969, 7, 20, 20, 17, 0, 0, time.UTC)
 	got := spanEvents([]tracesdk.Event{
 		{
 			Name:       "test 1",
@@ -87,30 +76,26 @@ func TestSpanEvent(t *testing.T) {
 			Time:       eventTime,
 		},
 		{
-			Name:       "test 2",
-			Attributes: attrs,
-			Time:       eventTime,
+			Name:                  "test 2",
+			Attributes:            attrs,
+			Time:                  eventTime,
+			DroppedAttributeCount: 2,
+		},
+		{
+			Name:                  "test 3",
+			Attributes:            attrs,
+			Time:                  negativeEventTime,
+			DroppedAttributeCount: 2,
 		},
 	})
-	if !assert.Len(t, got, 2) {
+	if !assert.Len(t, got, 3) {
 		return
 	}
 	eventTimestamp := uint64(1589932800 * 1e9)
 	assert.Equal(t, &tracepb.Span_Event{Name: "test 1", Attributes: nil, TimeUnixNano: eventTimestamp}, got[0])
 	// Do not test Attributes directly, just that the return value goes to the correct field.
-	assert.Equal(t, &tracepb.Span_Event{Name: "test 2", Attributes: KeyValues(attrs), TimeUnixNano: eventTimestamp}, got[1])
-}
-
-func TestExcessiveSpanEvents(t *testing.T) {
-	e := make([]tracesdk.Event, maxEventsPerSpan+1)
-	for i := 0; i < maxEventsPerSpan+1; i++ {
-		e[i] = tracesdk.Event{Name: strconv.Itoa(i)}
-	}
-	assert.Len(t, e, maxEventsPerSpan+1)
-	got := spanEvents(e)
-	assert.Len(t, got, maxEventsPerSpan)
-	// Ensure the drop order.
-	assert.Equal(t, strconv.Itoa(maxEventsPerSpan-1), got[len(got)-1].Name)
+	assert.Equal(t, &tracepb.Span_Event{Name: "test 2", Attributes: KeyValues(attrs), TimeUnixNano: eventTimestamp, DroppedAttributesCount: 2}, got[1])
+	assert.Equal(t, &tracepb.Span_Event{Name: "test 3", Attributes: KeyValues(attrs), TimeUnixNano: 0, DroppedAttributesCount: 2}, got[2])
 }
 
 func TestNilLinks(t *testing.T) {
@@ -124,10 +109,13 @@ func TestEmptyLinks(t *testing.T) {
 func TestLinks(t *testing.T) {
 	attrs := []attribute.KeyValue{attribute.Int("one", 1), attribute.Int("two", 2)}
 	l := []tracesdk.Link{
-		{},
 		{
-			SpanContext: trace.SpanContext{},
-			Attributes:  attrs,
+			DroppedAttributeCount: 3,
+		},
+		{
+			SpanContext:           trace.SpanContext{},
+			Attributes:            attrs,
+			DroppedAttributeCount: 3,
 		},
 	}
 	got := links(l)
@@ -139,8 +127,10 @@ func TestLinks(t *testing.T) {
 
 	// Empty should be empty.
 	expected := &tracepb.Span_Link{
-		TraceId: []uint8{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0},
-		SpanId:  []uint8{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0},
+		TraceId:                []uint8{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0},
+		SpanId:                 []uint8{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0},
+		DroppedAttributesCount: 3,
+		Flags:                  0x100,
 	}
 	assert.Equal(t, expected, got[0])
 
@@ -151,6 +141,7 @@ func TestLinks(t *testing.T) {
 	// Changes to our links should not change the produced links.
 	l[1].SpanContext = l[1].SpanContext.WithTraceID(trace.TraceID{})
 	assert.Equal(t, expected, got[1])
+	assert.Equal(t, l[1].DroppedAttributeCount, int(got[1].DroppedAttributesCount))
 }
 
 func TestStatus(t *testing.T) {
@@ -182,7 +173,30 @@ func TestStatus(t *testing.T) {
 		expected := &tracepb.Status{Code: test.otlpStatus, Message: test.message}
 		assert.Equal(t, expected, status(test.code, test.message))
 	}
+}
 
+func TestBuildSpanFlags(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		spanContext trace.SpanContext
+		wantFlags   uint32
+	}{
+		{
+			name:      "with an empty span context",
+			wantFlags: 0x100,
+		},
+		{
+			name: "with a remote span context",
+			spanContext: trace.NewSpanContext(trace.SpanContextConfig{
+				Remote: true,
+			}),
+			wantFlags: 0x300,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.wantFlags, buildSpanFlags(tt.spanContext))
+		})
+	}
 }
 
 func TestNilSpan(t *testing.T) {
@@ -221,12 +235,14 @@ func TestSpanData(t *testing.T) {
 		StartTime: startTime,
 		EndTime:   endTime,
 		Events: []tracesdk.Event{
-			{Time: startTime,
+			{
+				Time: startTime,
 				Attributes: []attribute.KeyValue{
 					attribute.Int64("CompressedByteSize", 512),
 				},
 			},
-			{Time: endTime,
+			{
+				Time: endTime,
 				Attributes: []attribute.KeyValue{
 					attribute.String("EventType", "Recv"),
 				},
@@ -272,7 +288,7 @@ func TestSpanData(t *testing.T) {
 			attribute.Int64("rk2", 5),
 			attribute.StringSlice("rk3", []string{"sv1", "sv2"}),
 		),
-		InstrumentationLibrary: instrumentation.Library{
+		InstrumentationScope: instrumentation.Scope{
 			Name:      "go.opentelemetry.io/test/otel",
 			Version:   "v0.0.1",
 			SchemaURL: semconv.SchemaURL,
@@ -287,6 +303,7 @@ func TestSpanData(t *testing.T) {
 		SpanId:                 []byte{0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8},
 		ParentSpanId:           []byte{0xEF, 0xEE, 0xED, 0xEC, 0xEB, 0xEA, 0xE9, 0xE8},
 		TraceState:             "key1=val1,key2=val2",
+		Flags:                  0x300,
 		Name:                   spanData.Name,
 		Kind:                   tracepb.Span_SPAN_KIND_SERVER,
 		StartTimeUnixNano:      uint64(startTime.UnixNano()),
@@ -305,12 +322,12 @@ func TestSpanData(t *testing.T) {
 
 	assert.Equal(t, got[0].GetResource(), Resource(spanData.Resource))
 	assert.Equal(t, got[0].SchemaUrl, spanData.Resource.SchemaURL())
-	ilSpans := got[0].GetInstrumentationLibrarySpans()
-	require.Len(t, ilSpans, 1)
-	assert.Equal(t, ilSpans[0].SchemaUrl, spanData.InstrumentationLibrary.SchemaURL)
-	assert.Equal(t, ilSpans[0].GetInstrumentationLibrary(), InstrumentationLibrary(spanData.InstrumentationLibrary))
-	require.Len(t, ilSpans[0].Spans, 1)
-	actualSpan := ilSpans[0].Spans[0]
+	scopeSpans := got[0].GetScopeSpans()
+	require.Len(t, scopeSpans, 1)
+	assert.Equal(t, scopeSpans[0].SchemaUrl, spanData.InstrumentationScope.SchemaURL)
+	assert.Equal(t, scopeSpans[0].GetScope(), InstrumentationScope(spanData.InstrumentationScope))
+	require.Len(t, scopeSpans[0].Spans, 1)
+	actualSpan := scopeSpans[0].Spans[0]
 
 	if diff := cmp.Diff(expectedSpan, actualSpan, cmp.Comparer(proto.Equal)); diff != "" {
 		t.Fatalf("transformed span differs %v\n", diff)
@@ -319,15 +336,53 @@ func TestSpanData(t *testing.T) {
 
 // Empty parent span ID should be treated as root span.
 func TestRootSpanData(t *testing.T) {
-	sd := Spans(tracetest.SpanStubs{{}}.Snapshots())
+	sd := Spans(tracetest.SpanStubs{
+		{},
+	}.Snapshots())
 	require.Len(t, sd, 1)
 	rs := sd[0]
-	got := rs.GetInstrumentationLibrarySpans()[0].GetSpans()[0].GetParentSpanId()
+	scopeSpans := rs.GetScopeSpans()
+	require.Len(t, scopeSpans, 1)
+	got := scopeSpans[0].GetSpans()[0].GetParentSpanId()
 
 	// Empty means root span.
 	assert.Nil(t, got, "incorrect transform of root parent span ID")
 }
 
 func TestSpanDataNilResource(t *testing.T) {
-	assert.NotPanics(t, func() { Spans(tracetest.SpanStubs{{}}.Snapshots()) })
+	assert.NotPanics(t, func() {
+		Spans(tracetest.SpanStubs{
+			{},
+		}.Snapshots())
+	})
+}
+
+func BenchmarkSpans(b *testing.B) {
+	records := []tracesdk.ReadOnlySpan{
+		tracetest.SpanStub{
+			Attributes: []attribute.KeyValue{
+				attribute.String("a", "b"),
+				attribute.String("b", "b"),
+				attribute.String("c", "b"),
+				attribute.String("d", "b"),
+			},
+			Links: []tracesdk.Link{
+				{},
+				{},
+				{},
+				{},
+				{},
+			},
+		}.Snapshot(),
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		var out []*tracepb.ResourceSpans
+		for pb.Next() {
+			out = Spans(records)
+		}
+		_ = out
+	})
 }

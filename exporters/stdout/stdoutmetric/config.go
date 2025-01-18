@@ -1,118 +1,132 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package stdoutmetric // import "go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 
-	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/metric"
 )
 
-var (
-	defaultWriter       = os.Stdout
-	defaultPrettyPrint  = false
-	defaultTimestamps   = true
-	defaultLabelEncoder = attribute.DefaultEncoder()
-)
-
-// config contains options for the STDOUT exporter.
+// config contains options for the exporter.
 type config struct {
-	// Writer is the destination.  If not set, os.Stdout is used.
-	Writer io.Writer
-
-	// PrettyPrint will encode the output into readable JSON. Default is
-	// false.
-	PrettyPrint bool
-
-	// Timestamps specifies if timestamps should be printed. Default is
-	// true.
-	Timestamps bool
-
-	// LabelEncoder encodes the labels.
-	LabelEncoder attribute.Encoder
+	prettyPrint         bool
+	encoder             *encoderHolder
+	temporalitySelector metric.TemporalitySelector
+	aggregationSelector metric.AggregationSelector
+	redactTimestamps    bool
 }
 
-// newConfig creates a validated Config configured with options.
-func newConfig(options ...Option) (config, error) {
-	cfg := config{
-		Writer:       defaultWriter,
-		PrettyPrint:  defaultPrettyPrint,
-		Timestamps:   defaultTimestamps,
-		LabelEncoder: defaultLabelEncoder,
-	}
+// newConfig creates a validated config configured with options.
+func newConfig(options ...Option) config {
+	cfg := config{}
 	for _, opt := range options {
 		cfg = opt.apply(cfg)
-
 	}
-	return cfg, nil
+
+	if cfg.encoder == nil {
+		enc := json.NewEncoder(os.Stdout)
+		cfg.encoder = &encoderHolder{encoder: enc}
+	}
+
+	if cfg.prettyPrint {
+		if e, ok := cfg.encoder.encoder.(*json.Encoder); ok {
+			e.SetIndent("", "\t")
+		}
+	}
+
+	if cfg.temporalitySelector == nil {
+		cfg.temporalitySelector = metric.DefaultTemporalitySelector
+	}
+
+	if cfg.aggregationSelector == nil {
+		cfg.aggregationSelector = metric.DefaultAggregationSelector
+	}
+
+	return cfg
 }
 
-// Option sets the value of an option for a Config.
+// Option sets exporter option values.
 type Option interface {
 	apply(config) config
 }
 
+type optionFunc func(config) config
+
+func (o optionFunc) apply(c config) config {
+	return o(c)
+}
+
+// WithEncoder sets the exporter to use encoder to encode all the metric
+// data-types to an output.
+func WithEncoder(encoder Encoder) Option {
+	return optionFunc(func(c config) config {
+		if encoder != nil {
+			c.encoder = &encoderHolder{encoder: encoder}
+		}
+		return c
+	})
+}
+
 // WithWriter sets the export stream destination.
+// Using this option overrides any previously set encoder.
 func WithWriter(w io.Writer) Option {
-	return writerOption{w}
+	return WithEncoder(json.NewEncoder(w))
 }
 
-type writerOption struct {
-	W io.Writer
-}
-
-func (o writerOption) apply(cfg config) config {
-	cfg.Writer = o.W
-	return cfg
-}
-
-// WithPrettyPrint sets the export stream format to use JSON.
+// WithPrettyPrint prettifies the emitted output.
+// This option only works if the encoder is a *json.Encoder, as is the case
+// when using `WithWriter`.
 func WithPrettyPrint() Option {
-	return prettyPrintOption(true)
+	return optionFunc(func(c config) config {
+		c.prettyPrint = true
+		return c
+	})
 }
 
-type prettyPrintOption bool
-
-func (o prettyPrintOption) apply(cfg config) config {
-	cfg.PrettyPrint = bool(o)
-	return cfg
+// WithTemporalitySelector sets the TemporalitySelector the exporter will use
+// to determine the Temporality of an instrument based on its kind. If this
+// option is not used, the exporter will use the DefaultTemporalitySelector
+// from the go.opentelemetry.io/otel/sdk/metric package.
+func WithTemporalitySelector(selector metric.TemporalitySelector) Option {
+	return temporalitySelectorOption{selector: selector}
 }
 
-// WithoutTimestamps sets the export stream to not include timestamps.
+type temporalitySelectorOption struct {
+	selector metric.TemporalitySelector
+}
+
+func (t temporalitySelectorOption) apply(c config) config {
+	c.temporalitySelector = t.selector
+	return c
+}
+
+// WithAggregationSelector sets the AggregationSelector the exporter will use
+// to determine the aggregation to use for an instrument based on its kind. If
+// this option is not used, the exporter will use the
+// DefaultAggregationSelector from the go.opentelemetry.io/otel/sdk/metric
+// package or the aggregation explicitly passed for a view matching an
+// instrument.
+func WithAggregationSelector(selector metric.AggregationSelector) Option {
+	return aggregationSelectorOption{selector: selector}
+}
+
+type aggregationSelectorOption struct {
+	selector metric.AggregationSelector
+}
+
+func (t aggregationSelectorOption) apply(c config) config {
+	c.aggregationSelector = t.selector
+	return c
+}
+
+// WithoutTimestamps sets all timestamps to zero in the output stream.
 func WithoutTimestamps() Option {
-	return timestampsOption(false)
-}
-
-type timestampsOption bool
-
-func (o timestampsOption) apply(cfg config) config {
-	cfg.Timestamps = bool(o)
-	return cfg
-}
-
-// WithLabelEncoder sets the label encoder used in export.
-func WithLabelEncoder(enc attribute.Encoder) Option {
-	return labelEncoderOption{enc}
-}
-
-type labelEncoderOption struct {
-	LabelEncoder attribute.Encoder
-}
-
-func (o labelEncoderOption) apply(cfg config) config {
-	cfg.LabelEncoder = o.LabelEncoder
-	return cfg
+	return optionFunc(func(c config) config {
+		c.redactTimestamps = true
+		return c
+	})
 }

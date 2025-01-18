@@ -1,23 +1,14 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package attribute_test
 
 import (
+	"reflect"
 	"regexp"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -128,6 +119,106 @@ func TestSetDedup(t *testing.T) {
 	}
 }
 
+func TestFiltering(t *testing.T) {
+	a := attribute.String("A", "a")
+	b := attribute.String("B", "b")
+	c := attribute.String("C", "c")
+
+	tests := []struct {
+		name       string
+		in         []attribute.KeyValue
+		filter     attribute.Filter
+		kept, drop []attribute.KeyValue
+	}{
+		{
+			name:   "A",
+			in:     []attribute.KeyValue{a, b, c},
+			filter: func(kv attribute.KeyValue) bool { return kv.Key == "A" },
+			kept:   []attribute.KeyValue{a},
+			drop:   []attribute.KeyValue{b, c},
+		},
+		{
+			name:   "B",
+			in:     []attribute.KeyValue{a, b, c},
+			filter: func(kv attribute.KeyValue) bool { return kv.Key == "B" },
+			kept:   []attribute.KeyValue{b},
+			drop:   []attribute.KeyValue{a, c},
+		},
+		{
+			name:   "C",
+			in:     []attribute.KeyValue{a, b, c},
+			filter: func(kv attribute.KeyValue) bool { return kv.Key == "C" },
+			kept:   []attribute.KeyValue{c},
+			drop:   []attribute.KeyValue{a, b},
+		},
+		{
+			name: "A||B",
+			in:   []attribute.KeyValue{a, b, c},
+			filter: func(kv attribute.KeyValue) bool {
+				return kv.Key == "A" || kv.Key == "B"
+			},
+			kept: []attribute.KeyValue{a, b},
+			drop: []attribute.KeyValue{c},
+		},
+		{
+			name: "B||C",
+			in:   []attribute.KeyValue{a, b, c},
+			filter: func(kv attribute.KeyValue) bool {
+				return kv.Key == "B" || kv.Key == "C"
+			},
+			kept: []attribute.KeyValue{b, c},
+			drop: []attribute.KeyValue{a},
+		},
+		{
+			name: "A||C",
+			in:   []attribute.KeyValue{a, b, c},
+			filter: func(kv attribute.KeyValue) bool {
+				return kv.Key == "A" || kv.Key == "C"
+			},
+			kept: []attribute.KeyValue{a, c},
+			drop: []attribute.KeyValue{b},
+		},
+		{
+			name:   "None",
+			in:     []attribute.KeyValue{a, b, c},
+			filter: func(kv attribute.KeyValue) bool { return false },
+			kept:   nil,
+			drop:   []attribute.KeyValue{a, b, c},
+		},
+		{
+			name:   "All",
+			in:     []attribute.KeyValue{a, b, c},
+			filter: func(kv attribute.KeyValue) bool { return true },
+			kept:   []attribute.KeyValue{a, b, c},
+			drop:   nil,
+		},
+		{
+			name:   "Empty",
+			in:     []attribute.KeyValue{},
+			filter: func(kv attribute.KeyValue) bool { return true },
+			kept:   nil,
+			drop:   nil,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Run("NewSetWithFiltered", func(t *testing.T) {
+				fltr, drop := attribute.NewSetWithFiltered(test.in, test.filter)
+				assert.Equal(t, test.kept, fltr.ToSlice(), "filtered")
+				assert.ElementsMatch(t, test.drop, drop, "dropped")
+			})
+
+			t.Run("Set.Filter", func(t *testing.T) {
+				s := attribute.NewSet(test.in...)
+				fltr, drop := s.Filter(test.filter)
+				assert.Equal(t, test.kept, fltr.ToSlice(), "filtered")
+				assert.ElementsMatch(t, test.drop, drop, "dropped")
+			})
+		})
+	}
+}
+
 func TestUniqueness(t *testing.T) {
 	short := []attribute.KeyValue{
 		attribute.String("A", "0"),
@@ -159,8 +250,8 @@ func TestUniqueness(t *testing.T) {
 	for _, tc := range cases {
 		cpy := make([]attribute.KeyValue, len(tc.kvs))
 		copy(cpy, tc.kvs)
-		distinct, uniq := attribute.NewSetWithFiltered(cpy, func(label attribute.KeyValue) bool {
-			return tc.keyRe.MatchString(string(label.Key))
+		distinct, uniq := attribute.NewSetWithFiltered(cpy, func(attr attribute.KeyValue) bool {
+			return tc.keyRe.MatchString(string(attr.Key))
 		})
 
 		full := attribute.NewSet(uniq...)
@@ -185,6 +276,102 @@ func TestLookup(t *testing.T) {
 	require.True(t, has)
 	require.Equal(t, int64(1), value.AsInt64())
 
-	value, has = set.Value("D")
+	_, has = set.Value("D")
 	require.False(t, has)
+}
+
+func TestZeroSetExportedMethodsNoPanic(t *testing.T) {
+	rType := reflect.TypeOf((*attribute.Set)(nil))
+	rVal := reflect.ValueOf(&attribute.Set{})
+	for n := 0; n < rType.NumMethod(); n++ {
+		mType := rType.Method(n)
+		if !mType.IsExported() {
+			t.Logf("ignoring unexported %s", mType.Name)
+			continue
+		}
+		t.Run(mType.Name, func(t *testing.T) {
+			m := rVal.MethodByName(mType.Name)
+			if !m.IsValid() {
+				t.Errorf("unknown method: %s", mType.Name)
+			}
+			assert.NotPanics(t, func() { _ = m.Call(args(mType)) })
+		})
+	}
+}
+
+func args(m reflect.Method) []reflect.Value {
+	numIn := m.Type.NumIn() - 1 // Do not include the receiver arg.
+	if numIn <= 0 {
+		return nil
+	}
+	if m.Type.IsVariadic() {
+		numIn--
+	}
+	out := make([]reflect.Value, numIn)
+	for i := range out {
+		aType := m.Type.In(i + 1) // Skip receiver arg.
+		out[i] = reflect.New(aType).Elem()
+	}
+	return out
+}
+
+func BenchmarkFiltering(b *testing.B) {
+	var kvs [26]attribute.KeyValue
+	buf := [1]byte{'A' - 1}
+	for i := range kvs {
+		buf[0]++ // A, B, C ... Z
+		kvs[i] = attribute.String(string(buf[:]), "")
+	}
+
+	var result struct {
+		set     attribute.Set
+		dropped []attribute.KeyValue
+	}
+
+	benchFn := func(fltr attribute.Filter) func(*testing.B) {
+		return func(b *testing.B) {
+			b.Helper()
+			b.Run("Set.Filter", func(b *testing.B) {
+				s := attribute.NewSet(kvs[:]...)
+				b.ResetTimer()
+				b.ReportAllocs()
+				for n := 0; n < b.N; n++ {
+					result.set, result.dropped = s.Filter(fltr)
+				}
+			})
+
+			b.Run("NewSetWithFiltered", func(b *testing.B) {
+				attrs := kvs[:]
+				b.ResetTimer()
+				b.ReportAllocs()
+				for n := 0; n < b.N; n++ {
+					result.set, result.dropped = attribute.NewSetWithFiltered(attrs, fltr)
+				}
+			})
+		}
+	}
+
+	b.Run("NoFilter", benchFn(nil))
+	b.Run("NoFiltered", benchFn(func(attribute.KeyValue) bool { return true }))
+	b.Run("Filtered", benchFn(func(kv attribute.KeyValue) bool { return kv.Key == "A" }))
+	b.Run("AllDropped", benchFn(func(attribute.KeyValue) bool { return false }))
+}
+
+var sinkSet attribute.Set
+
+func BenchmarkNewSet(b *testing.B) {
+	attrs := []attribute.KeyValue{
+		attribute.String("B1", "2"),
+		attribute.String("C2", "5"),
+		attribute.String("B3", "2"),
+		attribute.String("C4", "1"),
+		attribute.String("A5", "4"),
+		attribute.String("C6", "3"),
+		attribute.String("A7", "1"),
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sinkSet = attribute.NewSet(attrs...)
+	}
 }
